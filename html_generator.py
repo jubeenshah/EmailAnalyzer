@@ -221,6 +221,63 @@ def generate_digest_section(digests):
     return html
     ######################################################################
 
+def generate_tracking_section(tracking_pixels):
+    # Data
+    ######################################################################
+    html = """
+        <h2 id="tracking-section" style="text-align: center;"><i class="fa-solid fa-eye"></i> Tracking Pixels</h2>
+        <hr>
+        <h3 id="tracking-data-section"><i class="fa-solid fa-chart-column"></i> Data</h3>
+        <table class="table table-bordered table-striped">
+            <thead>
+                <tr>
+                    <th>Key</th>
+                    <th>Value</th>
+                </tr>
+            </thead>
+        <tbody>
+    """
+    for key,value in tracking_pixels["Data"].items():
+        # Populate table rows
+        html += "<tr>"
+        html += "<td>{}</td><td>{}</td>".format(key,value)
+        html += "</tr>"
+        
+    html += """
+        </tbody>
+    </table>"""
+    ######################################################################
+
+    # Investigation
+    ######################################################################
+    html += """
+        <h3 id="tracking-investigation-section"><i class="fa-solid fa-magnifying-glass"></i> Investigation</h3>
+        <table class="table table-bordered table-striped">
+            <thead>
+                <tr>
+                    <th>URL</th>
+                    <th>Provider</th>
+                    <th>Reasons</th>
+                </tr>
+            </thead>
+        <tbody>
+    """
+    for url, details in tracking_pixels["Investigation"].items():
+        # Populate table rows with tracking pixel details
+        html += "<tr>"
+        html += f"<td><a href='{url}' target='_blank'>{url}</a></td>"
+        html += f"<td>{details.get('provider', 'Unknown')}</td>"
+        html += f"<td>{', '.join(details.get('reasons', []))}</td>"
+        html += "</tr>"
+        
+    html += """
+        </tbody>
+    </table>
+    <hr>"""
+
+    return html
+    ######################################################################
+
 def generate_table_from_json(json_obj):
     # Parse JSON object
     data = json_obj["Analysis"]
@@ -254,6 +311,13 @@ def generate_table_from_json(json_obj):
     else:
         digest_cnt = 0
         digest_inv_cnt = 0
+
+    if data.get("TrackingPixels"):
+        tracking_cnt = len(data["TrackingPixels"]["Data"])
+        tracking_inv_cnt = len(data["TrackingPixels"]["Investigation"])
+    else:
+        tracking_cnt = 0
+        tracking_inv_cnt = 0
 
     # Generate HTML table with Bootstrap classes
     html = f"""
@@ -305,6 +369,15 @@ def generate_table_from_json(json_obj):
                     <div class="dropdown-menu" aria-labelledby="navbarDropdown">
                     <a class="dropdown-item" href="#digests-data-section">Data <span class="badge badge-pill badge-dark">{ digest_cnt }</span></a>
                     <a class="dropdown-item" href="#digests-investigation-section">Investigation <span class="badge badge-pill badge-dark">{ digest_inv_cnt }</span></a>
+                    </div>
+                </li>
+                <li class="nav-item dropdown">
+                    <a class="nav-link dropdown-toggle" href="#" id="navbarDropdown" role="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                    Tracking Pixels
+                    </a>
+                    <div class="dropdown-menu" aria-labelledby="navbarDropdown">
+                    <a class="dropdown-item" href="#tracking-data-section">Data <span class="badge badge-pill badge-dark">{ tracking_cnt }</span></a>
+                    <a class="dropdown-item" href="#tracking-investigation-section">Investigation <span class="badge badge-pill badge-dark">{ tracking_inv_cnt }</span></a>
                     </div>
                 </li>
                 </ul>
@@ -377,6 +450,9 @@ def generate_table_from_json(json_obj):
 
     if data.get("Digests"):    
         html += generate_digest_section(data["Digests"])
+    
+    if data.get("TrackingPixels"):
+        html += generate_tracking_section(data["TrackingPixels"])
     
     
     html += """
