@@ -278,6 +278,99 @@ def generate_tracking_section(tracking_pixels):
     return html
     ######################################################################
 
+def generate_infrastructure_section(infrastructure):
+    # Data
+    ######################################################################
+    html = """
+        <h2 id="infrastructure-section" style="text-align: center;"><i class="fa-solid fa-server"></i> Infrastructure</h2>
+        <hr>
+        <h3 id="infrastructure-data-section"><i class="fa-solid fa-chart-column"></i> Data</h3>
+        <table class="table table-bordered table-striped">
+            <thead>
+                <tr>
+                    <th>Key</th>
+                    <th>Value</th>
+                </tr>
+            </thead>
+        <tbody>
+    """
+    for key,value in infrastructure["Data"].items():
+        # Populate table rows
+        html += "<tr>"
+        html += "<td>{}</td><td>{}</td>".format(key.replace('_', ' ').title(),value)
+        html += "</tr>"
+        
+    html += """
+        </tbody>
+    </table>"""
+    ######################################################################
+
+    # Investigation
+    ######################################################################
+    html += """
+        <h3 id="infrastructure-investigation-section"><i class="fa-solid fa-magnifying-glass"></i> Investigation</h3>
+        <table class="table table-bordered table-striped">
+            <thead>
+                <tr>
+                    <th>Component</th>
+                    <th>Details</th>
+                </tr>
+            </thead>
+        <tbody>
+    """
+    
+    # Handle different types of investigation data
+    if infrastructure.get("Investigation"):
+        for key, details in infrastructure["Investigation"].items():
+            html += "<tr>"
+            if key.startswith("ip_"):
+                # IP address details
+                html += f"<td><strong>IP Analysis {key.split('_')[1]}</strong></td>"
+                html += "<td>"
+                html += f"<strong>IP:</strong> {details.get('IP_Address', 'N/A')}<br>"
+                html += f"<strong>ASN:</strong> {details.get('ASN', 'N/A')}<br>"
+                html += f"<strong>Organization:</strong> {details.get('Organization', 'N/A')}<br>"
+                html += f"<strong>Country:</strong> {details.get('Country', 'N/A')}<br>"
+                html += f"<a href='{details.get('VirusTotal', '#')}' target='_blank'>VirusTotal Analysis</a> | "
+                html += f"<a href='{details.get('AbuseIPDB', '#')}' target='_blank'>AbuseIPDB Check</a>"
+                html += "</td>"
+            elif key == "classification_details":
+                # Classification details
+                html += "<td><strong>Classification Analysis</strong></td>"
+                html += "<td>"
+                html += f"<strong>Primary:</strong> {details.get('Primary_Classification', 'N/A')}<br>"
+                if details.get('Evidence'):
+                    html += "<strong>Evidence:</strong><ul>"
+                    for evidence in details['Evidence']:
+                        html += f"<li>{evidence}</li>"
+                    html += "</ul>"
+                if details.get('Confidence_Breakdown'):
+                    html += "<strong>Confidence Scores:</strong><ul>"
+                    for provider, score in details['Confidence_Breakdown'].items():
+                        html += f"<li>{provider.title()}: {score}</li>"
+                    html += "</ul>"
+                html += "</td>"
+            elif key == "routing_analysis":
+                # Routing analysis
+                html += "<td><strong>Routing Analysis</strong></td>"
+                html += "<td>"
+                html += f"<strong>Return Path:</strong> {details.get('Return_Path', 'N/A')}<br>"
+                html += f"<strong>Message-ID Domain:</strong> {details.get('Message_ID_Domain', 'N/A')}<br>"
+                html += f"<strong>Received Headers:</strong> {details.get('Received_Headers_Count', 'N/A')}<br>"
+                html += f"<strong>Unique IPs:</strong> {details.get('Unique_IPs_Found', 'N/A')}<br>"
+                if details.get('IPs_Analyzed'):
+                    html += f"<strong>IPs Analyzed:</strong> {', '.join(details['IPs_Analyzed'])}"
+                html += "</td>"
+            html += "</tr>"
+        
+    html += """
+        </tbody>
+    </table>
+    <hr>"""
+
+    return html
+    ######################################################################
+
 def generate_table_from_json(json_obj):
     # Parse JSON object
     data = json_obj["Analysis"]
@@ -318,6 +411,13 @@ def generate_table_from_json(json_obj):
     else:
         tracking_cnt = 0
         tracking_inv_cnt = 0
+
+    if data.get("Infrastructure"):
+        infrastructure_cnt = len(data["Infrastructure"]["Data"])
+        infrastructure_inv_cnt = len(data["Infrastructure"]["Investigation"]) if data["Infrastructure"].get("Investigation") else 0
+    else:
+        infrastructure_cnt = 0
+        infrastructure_inv_cnt = 0
 
     # Generate HTML table with Bootstrap classes
     html = f"""
@@ -378,6 +478,15 @@ def generate_table_from_json(json_obj):
                     <div class="dropdown-menu" aria-labelledby="navbarDropdown">
                     <a class="dropdown-item" href="#tracking-data-section">Data <span class="badge badge-pill badge-dark">{ tracking_cnt }</span></a>
                     <a class="dropdown-item" href="#tracking-investigation-section">Investigation <span class="badge badge-pill badge-dark">{ tracking_inv_cnt }</span></a>
+                    </div>
+                </li>
+                <li class="nav-item dropdown">
+                    <a class="nav-link dropdown-toggle" href="#" id="navbarDropdown" role="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                    Infrastructure
+                    </a>
+                    <div class="dropdown-menu" aria-labelledby="navbarDropdown">
+                    <a class="dropdown-item" href="#infrastructure-data-section">Data <span class="badge badge-pill badge-dark">{ infrastructure_cnt }</span></a>
+                    <a class="dropdown-item" href="#infrastructure-investigation-section">Investigation <span class="badge badge-pill badge-dark">{ infrastructure_inv_cnt }</span></a>
                     </div>
                 </li>
                 </ul>
@@ -453,6 +562,9 @@ def generate_table_from_json(json_obj):
     
     if data.get("TrackingPixels"):
         html += generate_tracking_section(data["TrackingPixels"])
+    
+    if data.get("Infrastructure"):
+        html += generate_infrastructure_section(data["Infrastructure"])
     
     
     html += """
