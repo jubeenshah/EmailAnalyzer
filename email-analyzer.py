@@ -28,7 +28,12 @@ SUPPORTED_FILE_TYPES = ["eml"]
 SUPPORTED_OUTPUT_TYPES = ["json","html"]
 
 # REGEX
-LINK_REGEX = r'href=\"((?:\S)*)\"'
+# Comprehensive HTML href regex that handles various quote styles and whitespace
+LINK_REGEX = r'''(?i)href\s*=\s*(?:
+    "([^"]*)"           |  # Double quotes
+    '([^']*)'           |  # Single quotes  
+    ([^\s>]+)              # No quotes (until space or >)
+)'''
 URL_REGEX = r'https?://[^\s<>"{}|\\^`\[\]]+'
 MAIL_REGEX = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,7}\b'
 
@@ -181,16 +186,28 @@ def get_links(msg, investigation):
                 mail_content = content.decode('latin-1', errors='ignore')
 
     # Find the Links using both href attributes and plain text URLs
-    href_links = re.findall(LINK_REGEX, mail_content)  # HTML href="..." links
-    url_links = re.findall(URL_REGEX, mail_content)    # Plain text URLs
+    href_matches = re.findall(LINK_REGEX, mail_content, re.VERBOSE)  # HTML href="..." links
+    # The regex returns tuples (double_quote, single_quote, no_quote) - get the non-empty one
+    href_links = [match[0] or match[1] or match[2] for match in href_matches]
+    
+    # Clean up href links - normalize whitespace
+    href_links = [re.sub(r'\s+', ' ', link.strip()) for link in href_links if link.strip()]
+    
+    # Only look for plain text URLs if no href links found or in non-HTML content
+    url_links = []
+    if not href_links or not any('<' in part for part in mail_content.split('\n')[:5]):  # Heuristic for HTML detection
+        url_links = re.findall(URL_REGEX, mail_content)    # Plain text URLs
     
     # Combine both types of links
-    links = href_links + url_links
-
-    # Remove Duplicates
-    links = list(dict.fromkeys(links))
-    # Remove Empty Values
-    links = list(filter(None, links))
+    all_links = href_links + url_links
+    
+    # Remove duplicates while preserving order and filter out empty links
+    links = []
+    seen = set()
+    for link in all_links:
+        if link and link not in seen:
+            links.append(link)
+            seen.add(link)
 
     # Create JSON data
     data = json.loads('{"Links":{"Data":{},"Investigation":{}}}')
