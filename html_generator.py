@@ -371,6 +371,141 @@ def generate_infrastructure_section(infrastructure):
     return html
     ######################################################################
 
+def generate_authentication_section(auth):
+    # Data
+    ######################################################################
+    html = """
+        <h2 id="auth-section" style="text-align: center;"><i class="fa-solid fa-shield-halved"></i> Authentication</h2>
+        <hr>
+        <h3 id="auth-data-section"><i class="fa-solid fa-chart-column"></i> Data</h3>
+        <table class="table table-bordered table-striped">
+            <thead>
+                <tr>
+                    <th>Protocol</th>
+                    <th>Result</th>
+                </tr>
+            </thead>
+        <tbody>
+    """
+    
+    # Add authentication results with icons and coloring
+    auth_data = auth["Data"]
+    
+    # SPF
+    spf_result = auth_data.get("SPF", "none")
+    spf_icon = "✅" if "pass" in spf_result else "❌" if "fail" in spf_result else "⚠️"
+    html += f"<tr><td><strong>SPF</strong></td><td>{spf_icon} {spf_result}</td></tr>"
+    
+    # DKIM  
+    dkim_result = auth_data.get("DKIM", "none")
+    dkim_icon = "✅" if "pass" in dkim_result else "❌" if "fail" in dkim_result else "⚠️"
+    html += f"<tr><td><strong>DKIM</strong></td><td>{dkim_icon} {dkim_result}</td></tr>"
+    
+    # DMARC
+    dmarc_result = auth_data.get("DMARC", "none") 
+    dmarc_icon = "✅" if "pass" in dmarc_result else "❌" if "fail" in dmarc_result else "⚠️"
+    html += f"<tr><td><strong>DMARC</strong></td><td>{dmarc_icon} {dmarc_result}</td></tr>"
+    
+    # ARC
+    arc_present = auth_data.get("ARC_Present", False)
+    arc_icon = "🔗" if arc_present else "➖"
+    html += f"<tr><td><strong>ARC</strong></td><td>{arc_icon} {'Present' if arc_present else 'Not Present'}</td></tr>"
+    
+    # Overall assessment
+    confidence_score = auth_data.get("Confidence_Score", 0)
+    conclusion = auth_data.get("Conclusion", "Unknown")
+    confidence_icon = "🔒" if confidence_score >= 10 else "🔓" if confidence_score >= 5 else "⚠️"
+    
+    html += f"<tr><td><strong>Confidence Score</strong></td><td>{confidence_score}</td></tr>"
+    html += f"<tr><td><strong>Conclusion</strong></td><td>{confidence_icon} {conclusion}</td></tr>"
+        
+    html += """
+        </tbody>
+    </table>"""
+    ######################################################################
+
+    # Investigation
+    ######################################################################
+    html += """
+        <h3 id="auth-investigation-section"><i class="fa-solid fa-magnifying-glass"></i> Investigation</h3>
+        <table class="table table-bordered table-striped">
+            <thead>
+                <tr>
+                    <th>Component</th>
+                    <th>Details</th>
+                </tr>
+            </thead>
+        <tbody>
+    """
+    
+    if auth.get("Investigation"):
+        investigation = auth["Investigation"]
+        
+        # Raw Headers
+        if "Raw_Headers" in investigation:
+            html += "<tr><td><strong>Raw Headers</strong></td><td>"
+            for header, value in investigation["Raw_Headers"].items():
+                html += f"<strong>{header.replace('_', '-')}:</strong><br><small>{value}</small><br><br>"
+            html += "</td></tr>"
+        
+        # Confidence Analysis
+        if "Confidence_Analysis" in investigation:
+            confidence = investigation["Confidence_Analysis"] 
+            html += "<tr><td><strong>Confidence Analysis</strong></td><td>"
+            html += f"<strong>Level:</strong> {confidence.get('Confidence_Level', 'Unknown')}<br>"
+            if confidence.get('Score_Breakdown'):
+                html += "<strong>Score Breakdown:</strong><ul>"
+                for component, score in confidence['Score_Breakdown'].items():
+                    html += f"<li>{component.replace('_', ' ')}: {score}</li>"
+                html += "</ul>"
+            html += "</td></tr>"
+        
+        # Parsed Details
+        if "Parsed_Details" in investigation:
+            parsed = investigation["Parsed_Details"]
+            html += "<tr><td><strong>Parsed Details</strong></td><td>"
+            
+            if parsed.get("SPF_Details"):
+                spf = parsed["SPF_Details"] 
+                html += f"<strong>SPF:</strong><br>Result: {spf.get('result', 'unknown')}<br>"
+                if spf.get('client_ip'):
+                    html += f"Client IP: {spf['client_ip']}<br>"
+                html += "<br>"
+            
+            if parsed.get("DKIM_Details"):
+                dkim = parsed["DKIM_Details"]
+                html += f"<strong>DKIM:</strong><br>"
+                if dkim.get('domain'):
+                    html += f"Domain: {dkim['domain']}<br>"
+                if dkim.get('selector'):
+                    html += f"Selector: {dkim['selector']}<br>"
+                if dkim.get('algorithm'):
+                    html += f"Algorithm: {dkim['algorithm']}<br>"
+                html += "<br>"
+                    
+            if parsed.get("ARC_Analysis", {}).get('present'):
+                arc = parsed["ARC_Analysis"]
+                html += f"<strong>ARC:</strong><br>"
+                html += f"Chain Valid: {arc.get('chain_valid', False)}<br>"
+                html += f"Instances: {arc.get('instances', 0)}<br>"
+            
+            html += "</td></tr>"
+        
+        # Recommendations
+        if investigation.get("Recommendations"):
+            html += "<tr><td><strong>Security Recommendations</strong></td><td><ul>"
+            for recommendation in investigation["Recommendations"]:
+                html += f"<li>{recommendation}</li>"
+            html += "</ul></td></tr>"
+        
+    html += """
+        </tbody>
+    </table>
+    <hr>"""
+
+    return html
+    ######################################################################
+
 def generate_table_from_json(json_obj):
     # Parse JSON object
     data = json_obj["Analysis"]
@@ -418,6 +553,13 @@ def generate_table_from_json(json_obj):
     else:
         infrastructure_cnt = 0
         infrastructure_inv_cnt = 0
+
+    if data.get("Auth"):
+        auth_cnt = len(data["Auth"]["Data"])
+        auth_inv_cnt = len(data["Auth"]["Investigation"]) if data["Auth"].get("Investigation") else 0
+    else:
+        auth_cnt = 0
+        auth_inv_cnt = 0
 
     # Generate HTML table with Bootstrap classes
     html = f"""
@@ -487,6 +629,15 @@ def generate_table_from_json(json_obj):
                     <div class="dropdown-menu" aria-labelledby="navbarDropdown">
                     <a class="dropdown-item" href="#infrastructure-data-section">Data <span class="badge badge-pill badge-dark">{ infrastructure_cnt }</span></a>
                     <a class="dropdown-item" href="#infrastructure-investigation-section">Investigation <span class="badge badge-pill badge-dark">{ infrastructure_inv_cnt }</span></a>
+                    </div>
+                </li>
+                <li class="nav-item dropdown">
+                    <a class="nav-link dropdown-toggle" href="#" id="navbarDropdown" role="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                    Authentication
+                    </a>
+                    <div class="dropdown-menu" aria-labelledby="navbarDropdown">
+                    <a class="dropdown-item" href="#auth-data-section">Data <span class="badge badge-pill badge-dark">{ auth_cnt }</span></a>
+                    <a class="dropdown-item" href="#auth-investigation-section">Investigation <span class="badge badge-pill badge-dark">{ auth_inv_cnt }</span></a>
                     </div>
                 </li>
                 </ul>
@@ -565,6 +716,9 @@ def generate_table_from_json(json_obj):
     
     if data.get("Infrastructure"):
         html += generate_infrastructure_section(data["Infrastructure"])
+    
+    if data.get("Auth"):
+        html += generate_authentication_section(data["Auth"])
     
     
     html += """
