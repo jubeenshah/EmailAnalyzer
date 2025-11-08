@@ -2,7 +2,7 @@
 
 # Libraries
 ##############################################################################
-from email.parser import HeaderParser
+from email.parser import HeaderParser, BytesParser
 from email import message_from_file,policy
 from argparse import ArgumentParser
 import sys
@@ -40,19 +40,17 @@ TER_COL_SIZE = 60
 
 # Functions
 ##############################################################################
-def get_headers(mail_data : str, investigation):
-    '''Get Headers from mail data'''
-    # Get Headers from mail data
-    headers = HeaderParser().parsestr(mail_data, headersonly=True)
+def get_headers(msg, investigation):
+    '''Get Headers from mail message object'''
     # Create JSON data
     data = json.loads('{"Headers":{"Data":{},"Investigation":{}}}')
     # Put Header data to JSON
-    for k,v in headers.items():
+    for k,v in msg.items():
         data["Headers"]["Data"][k.lower()] = v.replace('\t', '').replace('\n', '')
     
     # To get all 'Received' headers
     if data["Headers"]["Data"].get('received'):
-        data["Headers"]["Data"]["received"] = ' '.join(headers.get_all('Received')).replace('\t', '').replace('\n', '')
+        data["Headers"]["Data"]["received"] = ' '.join(msg.get_all('Received')).replace('\t', '').replace('\n', '')
 
     # If investigation requested
     if investigation:
@@ -90,7 +88,7 @@ def get_headers(mail_data : str, investigation):
 
     return data
 
-def get_digests(mail_data : str, filename : str, investigation):
+def get_digests(msg, filename : str, investigation):
     '''Get Hash value of mail'''
     with open(filename, 'rb') as f:
         eml_file    = f.read()
@@ -98,9 +96,11 @@ def get_digests(mail_data : str, filename : str, investigation):
         file_sha1   = hashlib.sha1(eml_file).hexdigest()
         file_sha256 = hashlib.sha256(eml_file).hexdigest()
 
-    content_md5     = hashlib.md5(mail_data.encode("utf-8")).hexdigest()
-    content_sha1    = hashlib.sha1(mail_data.encode("utf-8")).hexdigest()
-    content_sha256  = hashlib.sha256(mail_data.encode("utf-8")).hexdigest()
+    # Get content as string for hashing
+    content_str = str(msg)
+    content_md5     = hashlib.md5(content_str.encode("utf-8")).hexdigest()
+    content_sha1    = hashlib.sha1(content_str.encode("utf-8")).hexdigest()
+    content_sha256  = hashlib.sha256(content_str.encode("utf-8")).hexdigest()
 
     # Create JSON data
     data = json.loads('{"Digests":{"Data":{},"Investigation":{}}}')
@@ -135,15 +135,37 @@ def get_digests(mail_data : str, filename : str, investigation):
         }
     return data
 
-def get_links(mail_data : str, investigation):
-    '''Get Links from mail data'''
-
-    # If content of eml file is Encoded -> Decode
-    if "Content-Transfer-Encoding" in mail_data:
-        mail_data = str(quopri.decodestring(mail_data)) # Decode
+def get_links(msg, investigation):
+    '''Get Links from mail message object'''
+    
+    # Extract text content from the message
+    mail_content = ""
+    
+    # Get text content from all parts of the message
+    if msg.is_multipart():
+        for part in msg.walk():
+            if part.get_content_type() in ["text/plain", "text/html"]:
+                content = part.get_payload(decode=True)
+                if content:
+                    try:
+                        # Try to decode with specified charset or fallback to utf-8
+                        charset = part.get_content_charset() or 'utf-8'
+                        mail_content += content.decode(charset, errors='ignore') + "\n"
+                    except (UnicodeDecodeError, LookupError):
+                        # Fallback to latin-1 which can decode any byte sequence
+                        mail_content += content.decode('latin-1', errors='ignore') + "\n"
+    else:
+        # Single part message
+        content = msg.get_payload(decode=True)
+        if content:
+            try:
+                charset = msg.get_content_charset() or 'utf-8'
+                mail_content = content.decode(charset, errors='ignore')
+            except (UnicodeDecodeError, LookupError):
+                mail_content = content.decode('latin-1', errors='ignore')
 
     # Find the Links    
-    links = re.findall(LINK_REGEX, mail_data)
+    links = re.findall(LINK_REGEX, mail_content)
 
     # Remove Duplicates
     links = list(dict.fromkeys(links))
@@ -171,8 +193,8 @@ def get_links(mail_data : str, investigation):
 
 def get_attachments(filename : str, investigation):
     ''' Get Attachments from eml file'''
-    with open(filename, "r") as f:
-        msg = message_from_file(f, policy=policy.default)
+    with open(filename, "rb") as f:
+        msg = BytesParser(policy=policy.default).parse(f)
     
     # Create JSON data
     data = json.loads('{"Attachments":{"Data":{},"Investigation":{}}}')
@@ -393,8 +415,9 @@ if __name__ == '__main__':
             print(f"{file_format} file format not supported")
             sys.exit(-1) #Exit with error code
     
-    with open(filename,"r",encoding="utf-8") as file:
-        data = file.read().rstrip()
+    # Parse the email file
+    with open(filename, "rb") as file:
+        msg = BytesParser(policy=policy.default).parse(file)
 
     # Create JSON data
     app_data = json.loads('{"Information": {}, "Analysis":{}}')
@@ -416,19 +439,19 @@ if __name__ == '__main__':
         # Headers
         if args.headers:
             # Get Headers
-            headers = get_headers(data, args.investigate)
+            headers = get_headers(msg, args.investigate)
             app_data["Analysis"].update(headers)
 
         # Digests
         if args.digests:
             # Get Digests
-            digests = get_digests(data, filename, args.investigate)
+            digests = get_digests(msg, filename, args.investigate)
             app_data["Analysis"].update(digests)
 
         # Links
         if args.links:
             # Get & Print Links
-            links = get_links(data, args.investigate)
+            links = get_links(msg, args.investigate)
             app_data["Analysis"].update(links)
         
         # Attachments
@@ -451,15 +474,15 @@ if __name__ == '__main__':
         # If no argument given then run all processes
         investigate = True
         # Get Headers
-        headers = get_headers(data, investigate)
+        headers = get_headers(msg, investigate)
         app_data["Analysis"].update(headers)
 
         # Get Digests
-        digests = get_digests(data, filename, investigate)
+        digests = get_digests(msg, filename, investigate)
         app_data["Analysis"].update(digests)
 
         # Get & Print Links
-        links = get_links(data, investigate)
+        links = get_links(msg, investigate)
         app_data["Analysis"].update(links)
         
         # Get Attachments 
