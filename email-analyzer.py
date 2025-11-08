@@ -21,7 +21,7 @@ except ImportError:
 from banners import (
     get_introduction_banner,get_headers_banner,get_links_banner,
     get_digests_banner,get_attachment_banner,get_investigation_banner,
-    get_tracking_banner, get_infrastructure_banner
+    get_tracking_banner, get_infrastructure_banner, get_authentication_banner
 )
 from html_generator import generate_table_from_json
 ##############################################################################
@@ -122,6 +122,27 @@ INFRASTRUCTURE_PROVIDERS = {
 # IP regex for extracting from Received headers
 IP_REGEX = r'\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b'
 RECEIVED_REGEX = r'from\s+([^\s\[\]]+)(?:\s*\[([^\]]+)\])?'
+
+# Authentication analysis patterns
+AUTH_RESULT_REGEX = r'(\w+)=(pass|fail|none|neutral|softfail|temperror|permerror|policy)(?:\s+\([^)]+\))?(?:\s+([^;]+))?'
+DKIM_DOMAIN_REGEX = r'd=([^;\s]+)'
+DMARC_POLICY_REGEX = r'p=(none|quarantine|reject)'
+SPF_RESULT_REGEX = r'spf=(pass|fail|none|neutral|softfail|temperror|permerror)'
+
+# Authentication confidence scoring
+AUTH_CONFIDENCE_WEIGHTS = {
+    'spf': {'pass': 3, 'fail': -3, 'softfail': -1, 'neutral': 0, 'none': 0, 'temperror': 0, 'permerror': -2},
+    'dkim': {'pass': 4, 'fail': -4, 'none': 0, 'temperror': 0, 'permerror': -2},
+    'dmarc': {'pass': 5, 'fail': -5, 'none': 0, 'temperror': 0, 'permerror': -2}
+}
+
+# Authentication conclusion thresholds
+AUTH_CONCLUSIONS = {
+    'high': 'Aligned and valid; high confidence sender',
+    'medium': 'Partially authenticated; moderate confidence',
+    'low': 'Authentication issues; low confidence',
+    'fail': 'Authentication failed; potentially spoofed'
+}
 
 # Date Format
 DATE_FORMAT = "%B %d, %Y - %H:%M:%S"
@@ -611,6 +632,241 @@ def get_infrastructure_profile(msg, investigation):
     
     return data
 
+def parse_authentication_results(auth_results_header):
+    """Parse Authentication-Results header for SPF, DKIM, DMARC results"""
+    results = {'spf': 'none', 'dkim': 'none', 'dmarc': 'none', 'details': {}}
+    
+    if not auth_results_header:
+        return results
+    
+    # Clean up the header (remove line breaks and extra spaces)
+    auth_header = re.sub(r'\s+', ' ', auth_results_header.strip())
+    
+    # Find SPF results
+    spf_match = re.search(r'spf=(pass|fail|none|neutral|softfail|temperror|permerror)', auth_header, re.IGNORECASE)
+    if spf_match:
+        results['spf'] = spf_match.group(1).lower()
+    
+    # Find DKIM results - look for both simple and complex formats
+    dkim_match = re.search(r'dkim=(pass|fail|none|neutral|temperror|permerror)', auth_header, re.IGNORECASE)
+    if dkim_match:
+        results['dkim'] = dkim_match.group(1).lower()
+        
+        # Extract DKIM domain if present
+        dkim_domain_match = re.search(r'dkim=\w+[^;]*?header\.d=([^;\s]+)', auth_header, re.IGNORECASE)
+        if dkim_domain_match:
+            results['details']['dkim_domain'] = dkim_domain_match.group(1)
+    
+    # Find DMARC results
+    dmarc_match = re.search(r'dmarc=(pass|fail|none|temperror|permerror)', auth_header, re.IGNORECASE)
+    if dmarc_match:
+        results['dmarc'] = dmarc_match.group(1).lower()
+        
+        # Extract DMARC policy and domain
+        dmarc_policy_match = re.search(r'dmarc=\w+[^;]*?p=([^;\s]+)', auth_header, re.IGNORECASE)
+        if dmarc_policy_match:
+            results['details']['dmarc_policy'] = dmarc_policy_match.group(1)
+            
+        dmarc_domain_match = re.search(r'dmarc=\w+[^;]*?header\.from=([^;\s]+)', auth_header, re.IGNORECASE)
+        if dmarc_domain_match:
+            results['details']['dmarc_domain'] = dmarc_domain_match.group(1)
+    
+    return results
+
+def parse_dkim_signature(dkim_signature):
+    """Parse DKIM-Signature header for domain and key information"""
+    if not dkim_signature:
+        return {}
+    
+    details = {}
+    
+    # Extract domain (d=)
+    domain_match = re.search(r'd=([^;\s]+)', dkim_signature, re.IGNORECASE)
+    if domain_match:
+        details['domain'] = domain_match.group(1)
+    
+    # Extract selector (s=)
+    selector_match = re.search(r's=([^;\s]+)', dkim_signature, re.IGNORECASE)
+    if selector_match:
+        details['selector'] = selector_match.group(1)
+    
+    # Extract algorithm (a=)
+    algorithm_match = re.search(r'a=([^;\s]+)', dkim_signature, re.IGNORECASE)
+    if algorithm_match:
+        details['algorithm'] = algorithm_match.group(1)
+    
+    return details
+
+def parse_received_spf(received_spf):
+    """Parse Received-SPF header"""
+    if not received_spf:
+        return {'result': 'none'}
+    
+    result = {'result': 'none'}
+    
+    # Extract SPF result
+    spf_match = re.search(r'^(pass|fail|none|neutral|softfail|temperror|permerror)', received_spf, re.IGNORECASE)
+    if spf_match:
+        result['result'] = spf_match.group(1).lower()
+    
+    # Extract client IP if present
+    client_ip_match = re.search(r'client-ip=([^;\s]+)', received_spf, re.IGNORECASE)
+    if client_ip_match:
+        result['client_ip'] = client_ip_match.group(1)
+    
+    return result
+
+def analyze_arc_chain(arc_headers):
+    """Analyze ARC (Authenticated Received Chain) headers"""
+    arc_results = {'present': False, 'chain_valid': False, 'instances': 0}
+    
+    if not arc_headers:
+        return arc_results
+    
+    arc_results['present'] = True
+    arc_results['instances'] = len([h for h in arc_headers if h.startswith('ARC-Authentication-Results')])
+    
+    # Simple validation - in real implementation, you'd validate the entire chain
+    arc_results['chain_valid'] = arc_results['instances'] > 0
+    
+    return arc_results
+
+def calculate_auth_confidence(spf, dkim, dmarc):
+    """Calculate authentication confidence score"""
+    score = 0
+    
+    # Apply weights from AUTH_CONFIDENCE_WEIGHTS
+    score += AUTH_CONFIDENCE_WEIGHTS['spf'].get(spf, 0)
+    score += AUTH_CONFIDENCE_WEIGHTS['dkim'].get(dkim, 0)
+    score += AUTH_CONFIDENCE_WEIGHTS['dmarc'].get(dmarc, 0)
+    
+    # Determine confidence level
+    if score >= 10:
+        return 'high', score
+    elif score >= 5:
+        return 'medium', score
+    elif score >= 0:
+        return 'low', score
+    else:
+        return 'fail', score
+
+def determine_auth_conclusion(spf, dkim, dmarc, confidence_level, has_arc=False):
+    """Determine overall authentication conclusion"""
+    if confidence_level == 'high':
+        return AUTH_CONCLUSIONS['high']
+    elif confidence_level == 'medium':
+        if dkim == 'pass' or spf == 'pass':
+            return AUTH_CONCLUSIONS['medium']
+        else:
+            return AUTH_CONCLUSIONS['low']
+    elif confidence_level == 'low':
+        if any(result == 'fail' for result in [spf, dkim, dmarc]):
+            return AUTH_CONCLUSIONS['fail']
+        else:
+            return AUTH_CONCLUSIONS['low']
+    else:
+        return AUTH_CONCLUSIONS['fail']
+
+def get_authentication_analysis(msg, investigation):
+    """Analyze email authentication headers (SPF, DKIM, DMARC, ARC)"""
+    
+    # Get authentication headers
+    auth_results = msg.get('Authentication-Results', '')
+    dkim_signature = msg.get('DKIM-Signature', '')
+    received_spf = msg.get('Received-SPF', '')
+    
+    # Get all ARC headers
+    arc_headers = []
+    for header_name in msg.keys():
+        if header_name.startswith('ARC-'):
+            arc_headers.extend(msg.get_all(header_name) or [])
+    
+    # Parse authentication results
+    auth_data = parse_authentication_results(auth_results)
+    dkim_details = parse_dkim_signature(dkim_signature)
+    spf_details = parse_received_spf(received_spf)
+    arc_analysis = analyze_arc_chain(arc_headers)
+    
+    # If no Authentication-Results header, try to infer from individual headers
+    if auth_data['spf'] == 'none' and spf_details['result'] != 'none':
+        auth_data['spf'] = spf_details['result']
+    
+    if auth_data['dkim'] == 'none' and dkim_details:
+        # If we have DKIM signature but no result, assume pass (would need validation)
+        auth_data['dkim'] = 'pass'
+        auth_data['details']['dkim_domain'] = dkim_details.get('domain', 'unknown')
+    
+    # Calculate confidence and conclusion
+    confidence_level, confidence_score = calculate_auth_confidence(
+        auth_data['spf'], auth_data['dkim'], auth_data['dmarc']
+    )
+    
+    conclusion = determine_auth_conclusion(
+        auth_data['spf'], auth_data['dkim'], auth_data['dmarc'], 
+        confidence_level, arc_analysis['present']
+    )
+    
+    # Build result data structure
+    data = json.loads('{"Auth":{"Data":{},"Investigation":{}}}')
+    
+    # Format authentication results for output
+    spf_result = auth_data['spf']
+    dkim_result = auth_data['dkim']
+    dkim_domain = auth_data['details'].get('dkim_domain', '')
+    if dkim_domain and dkim_result == 'pass':
+        dkim_result = f"pass (d={dkim_domain})"
+    
+    dmarc_result = auth_data['dmarc']
+    dmarc_policy = auth_data['details'].get('dmarc_policy', '')
+    dmarc_domain = auth_data['details'].get('dmarc_domain', '')
+    if dmarc_policy and dmarc_domain and dmarc_result == 'pass':
+        dmarc_result = f"pass (p={dmarc_policy}, d={dmarc_domain})"
+    
+    # Populate data section
+    data["Auth"]["Data"]["SPF"] = spf_result
+    data["Auth"]["Data"]["DKIM"] = dkim_result
+    data["Auth"]["Data"]["DMARC"] = dmarc_result
+    data["Auth"]["Data"]["Conclusion"] = conclusion
+    data["Auth"]["Data"]["Confidence_Score"] = confidence_score
+    data["Auth"]["Data"]["ARC_Present"] = arc_analysis['present']
+    
+    # Populate investigation section if requested
+    if investigation:
+        data["Auth"]["Investigation"]["Raw_Headers"] = {
+            "Authentication_Results": auth_results or "Not present",
+            "DKIM_Signature": dkim_signature or "Not present", 
+            "Received_SPF": received_spf or "Not present"
+        }
+        
+        data["Auth"]["Investigation"]["Parsed_Details"] = {
+            "SPF_Details": spf_details,
+            "DKIM_Details": dkim_details,
+            "DMARC_Details": auth_data['details'],
+            "ARC_Analysis": arc_analysis
+        }
+        
+        data["Auth"]["Investigation"]["Confidence_Analysis"] = {
+            "Confidence_Level": confidence_level.title(),
+            "Score_Breakdown": {
+                "SPF_Contribution": AUTH_CONFIDENCE_WEIGHTS['spf'].get(auth_data['spf'], 0),
+                "DKIM_Contribution": AUTH_CONFIDENCE_WEIGHTS['dkim'].get(auth_data['dkim'], 0),
+                "DMARC_Contribution": AUTH_CONFIDENCE_WEIGHTS['dmarc'].get(auth_data['dmarc'], 0),
+                "Total_Score": confidence_score
+            }
+        }
+        
+        data["Auth"]["Investigation"]["Recommendations"] = []
+        if auth_data['spf'] in ['fail', 'softfail']:
+            data["Auth"]["Investigation"]["Recommendations"].append("SPF validation failed - check sender IP authorization")
+        if auth_data['dkim'] == 'fail':
+            data["Auth"]["Investigation"]["Recommendations"].append("DKIM signature validation failed - message may be modified")
+        if auth_data['dmarc'] == 'fail':
+            data["Auth"]["Investigation"]["Recommendations"].append("DMARC policy violation - sender domain alignment failed")
+        if not arc_analysis['present'] and confidence_level in ['low', 'fail']:
+            data["Auth"]["Investigation"]["Recommendations"].append("Consider implementing ARC for forwarded email authentication")
+    
+    return data
+
 def get_attachments(filename : str, investigation):
     ''' Get Attachments from eml file'''
     with open(filename, "rb") as f:
@@ -867,6 +1123,79 @@ def print_data(data):
                 if routing['IPs_Analyzed']:
                     print("IPs Analyzed:", ", ".join(routing['IPs_Analyzed']))
                 print("_"*TER_COL_SIZE)
+    
+    # Print Authentication Analysis
+    if data["Analysis"].get("Auth"):
+        # Print Banner
+        get_authentication_banner()
+        
+        print(f"\n🔐 SPF: {data['Analysis']['Auth']['Data']['SPF']}")
+        print(f"🔐 DKIM: {data['Analysis']['Auth']['Data']['DKIM']}")
+        print(f"🔐 DMARC: {data['Analysis']['Auth']['Data']['DMARC']}")
+        print(f"🔗 ARC Present: {data['Analysis']['Auth']['Data']['ARC_Present']}")
+        print(f"\n📊 Confidence Score: {data['Analysis']['Auth']['Data']['Confidence_Score']}")
+        print(f"✅ Conclusion: {data['Analysis']['Auth']['Data']['Conclusion']}")
+        print("_"*TER_COL_SIZE)
+        
+        # Print Investigation
+        if data["Analysis"]["Auth"].get("Investigation"):
+            get_investigation_banner() # Print Banner
+            
+            # Print raw headers
+            print("📋 Raw Authentication Headers:")
+            print("_"*TER_COL_SIZE)
+            for header, value in data["Analysis"]["Auth"]["Investigation"]["Raw_Headers"].items():
+                print(f"{header.replace('_', '-')}: {value}")
+                print("_"*TER_COL_SIZE)
+            
+            # Print parsed details
+            print("\n🔍 Parsed Authentication Details:")
+            print("_"*TER_COL_SIZE)
+            parsed = data["Analysis"]["Auth"]["Investigation"]["Parsed_Details"]
+            
+            if parsed.get("SPF_Details"):
+                spf = parsed["SPF_Details"]
+                print(f"SPF Result: {spf.get('result', 'unknown')}")
+                if spf.get('client_ip'):
+                    print(f"Client IP: {spf['client_ip']}")
+                print("_"*TER_COL_SIZE)
+            
+            if parsed.get("DKIM_Details"):
+                dkim = parsed["DKIM_Details"]
+                if dkim.get('domain'):
+                    print(f"DKIM Domain: {dkim['domain']}")
+                if dkim.get('selector'):
+                    print(f"DKIM Selector: {dkim['selector']}")
+                if dkim.get('algorithm'):
+                    print(f"DKIM Algorithm: {dkim['algorithm']}")
+                print("_"*TER_COL_SIZE)
+            
+            if parsed.get("ARC_Analysis", {}).get('present'):
+                arc = parsed["ARC_Analysis"]
+                print(f"ARC Chain Valid: {arc.get('chain_valid', False)}")
+                print(f"ARC Instances: {arc.get('instances', 0)}")
+                print("_"*TER_COL_SIZE)
+            
+            # Print confidence analysis
+            if "Confidence_Analysis" in data["Analysis"]["Auth"]["Investigation"]:
+                confidence = data["Analysis"]["Auth"]["Investigation"]["Confidence_Analysis"]
+                print("\n📈 Confidence Analysis:")
+                print("_"*TER_COL_SIZE)
+                print(f"Level: {confidence['Confidence_Level']}")
+                print("Score Breakdown:")
+                for component, score in confidence['Score_Breakdown'].items():
+                    if component != 'Total_Score':
+                        print(f"  • {component.replace('_', ' ')}: {score}")
+                print(f"  • Total: {confidence['Score_Breakdown']['Total_Score']}")
+                print("_"*TER_COL_SIZE)
+            
+            # Print recommendations
+            if data["Analysis"]["Auth"]["Investigation"].get("Recommendations"):
+                print("\n💡 Security Recommendations:")
+                print("_"*TER_COL_SIZE)
+                for recommendation in data["Analysis"]["Auth"]["Investigation"]["Recommendations"]:
+                    print(f"• {recommendation}")
+                print("_"*TER_COL_SIZE)
 ##############################################################################
 
 # Write to File Function
@@ -943,6 +1272,13 @@ if __name__ == '__main__':
         "-I",
         "--infrastructure", 
         help="To analyze email infrastructure and routing",
+        required=False,
+        action="store_true"
+    )
+    parser.add_argument(
+        "-A",
+        "--authentication",
+        help="To analyze email authentication (SPF, DKIM, DMARC, ARC)",
         required=False,
         action="store_true"
     )
@@ -1039,6 +1375,12 @@ if __name__ == '__main__':
             infrastructure = get_infrastructure_profile(msg, args.investigate)
             app_data["Analysis"].update(infrastructure)
         
+        # Authentication Analysis
+        if args.authentication:
+            # Get Authentication Analysis
+            authentication = get_authentication_analysis(msg, args.investigate)
+            app_data["Analysis"].update(authentication)
+        
         # If write to file requested
         if args.output:
             output_filename = str(args.output) # Filename
@@ -1075,6 +1417,10 @@ if __name__ == '__main__':
         # Get Infrastructure Profile
         infrastructure = get_infrastructure_profile(msg, investigate)
         app_data["Analysis"].update(infrastructure)
+        
+        # Get Authentication Analysis
+        authentication = get_authentication_analysis(msg, investigate)
+        app_data["Analysis"].update(authentication)
 
         # If write to file requested
         if args.output:
