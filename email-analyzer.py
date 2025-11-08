@@ -12,10 +12,16 @@ import os
 import json
 from datetime import datetime
 from io import BytesIO
+import ipaddress
+from urllib.parse import urlparse
+try:
+    from ipwhois import IPWhois
+except ImportError:
+    IPWhois = None
 from banners import (
     get_introduction_banner,get_headers_banner,get_links_banner,
     get_digests_banner,get_attachment_banner,get_investigation_banner,
-    get_tracking_banner
+    get_tracking_banner, get_infrastructure_banner
 )
 from html_generator import generate_table_from_json
 ##############################################################################
@@ -72,6 +78,50 @@ TRACKING_PATHS = [
     'track', 'pixel', 'open', 't.png', 'beacon', 'analytics',
     'impression', 'view', 'read', 'email-track', 'tracking'
 ]
+
+# Infrastructure classification patterns
+INFRASTRUCTURE_PROVIDERS = {
+    # Salesforce domains and IPs
+    'salesforce': {
+        'domains': ['salesforce.com', 'sfdcfc.net', 'sfdc.co'],
+        'asns': ['AS26496'],  # Salesforce ASN
+        'keywords': ['salesforce', 'sfdc']
+    },
+    # SendGrid domains and patterns
+    'sendgrid': {
+        'domains': ['sendgrid.net', 'sendgrid.com', 'sendgrid.biz'],
+        'asns': ['AS13335', 'AS19679'],  # Cloudflare, SendGrid
+        'keywords': ['sendgrid', 'sg']
+    },
+    # Mailgun patterns
+    'mailgun': {
+        'domains': ['mailgun.com', 'mailgun.net', 'mg.domain.com'],
+        'asns': ['AS26496'],
+        'keywords': ['mailgun', 'mg']
+    },
+    # Microsoft/Outlook patterns
+    'microsoft': {
+        'domains': ['outlook.com', 'hotmail.com', 'live.com', 'protection.outlook.com'],
+        'asns': ['AS8075'],  # Microsoft ASN
+        'keywords': ['outlook', 'microsoft', 'hotmail']
+    },
+    # Google/Gmail patterns
+    'google': {
+        'domains': ['gmail.com', 'googlemail.com', 'google.com'],
+        'asns': ['AS15169'],  # Google ASN
+        'keywords': ['gmail', 'google']
+    },
+    # Amazon SES patterns
+    'amazon': {
+        'domains': ['amazonses.com', 'ses-smtp.amazonaws.com'],
+        'asns': ['AS16509'],  # Amazon ASN
+        'keywords': ['amazon', 'ses', 'aws']
+    }
+}
+
+# IP regex for extracting from Received headers
+IP_REGEX = r'\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b'
+RECEIVED_REGEX = r'from\s+([^\s\[\]]+)(?:\s*\[([^\]]+)\])?'
 
 # Date Format
 DATE_FORMAT = "%B %d, %Y - %H:%M:%S"
@@ -385,6 +435,182 @@ def get_tracking_pixels(msg, investigation):
     
     return data
 
+def extract_ips_from_received(received_headers):
+    """Extract IP addresses from Received headers chain"""
+    ips = []
+    for received in received_headers:
+        # Extract IPs using regex
+        ip_matches = re.findall(IP_REGEX, received)
+        for ip in ip_matches:
+            try:
+                # Validate IP address
+                ipaddress.IPv4Address(ip)
+                # Skip private/local IPs
+                if not ipaddress.IPv4Address(ip).is_private:
+                    ips.append(ip)
+            except ipaddress.AddressValueError:
+                continue
+    return list(set(ips))  # Remove duplicates
+
+def enrich_ip_info(ip_address):
+    """Enrich IP with ASN, organization, and country info using ipwhois"""
+    if not IPWhois:
+        return {
+            "ip": ip_address,
+            "asn": "Unknown",
+            "organization": "Unknown", 
+            "country": "Unknown",
+            "error": "ipwhois not available"
+        }
+    
+    try:
+        obj = IPWhois(ip_address)
+        results = obj.lookup_rdap()
+        
+        # Extract key information
+        asn = results.get('asn', 'Unknown')
+        asn_description = results.get('asn_description', '')
+        country = results.get('asn_country_code', 'Unknown')
+        
+        # Try to get organization from network info
+        organization = asn_description
+        if 'network' in results and results['network']:
+            if 'name' in results['network']:
+                organization = results['network']['name']
+        
+        return {
+            "ip": ip_address,
+            "asn": f"AS{asn}" if asn != 'Unknown' else asn,
+            "organization": organization[:100],  # Truncate long org names
+            "country": country,
+            "error": None
+        }
+    except Exception as e:
+        return {
+            "ip": ip_address,
+            "asn": "Unknown",
+            "organization": "Unknown",
+            "country": "Unknown", 
+            "error": str(e)[:100]
+        }
+
+def classify_infrastructure(return_path, message_id_domain, ip_enrichments):
+    """Classify sending infrastructure based on domains, IPs, and ASNs"""
+    classifications = []
+    confidence_scores = {}
+    
+    # Check Return-Path domain
+    if return_path:
+        for provider, patterns in INFRASTRUCTURE_PROVIDERS.items():
+            for domain in patterns['domains']:
+                if domain in return_path.lower():
+                    classifications.append(f"Return-Path matches {provider}: {domain}")
+                    confidence_scores[provider] = confidence_scores.get(provider, 0) + 3
+    
+    # Check Message-ID domain
+    if message_id_domain:
+        for provider, patterns in INFRASTRUCTURE_PROVIDERS.items():
+            for domain in patterns['domains']:
+                if domain in message_id_domain.lower():
+                    classifications.append(f"Message-ID domain matches {provider}: {domain}")
+                    confidence_scores[provider] = confidence_scores.get(provider, 0) + 2
+    
+    # Check ASNs from IP enrichments
+    for enrichment in ip_enrichments:
+        if enrichment['asn'] != 'Unknown':
+            for provider, patterns in INFRASTRUCTURE_PROVIDERS.items():
+                if enrichment['asn'] in patterns['asns']:
+                    classifications.append(f"ASN matches {provider}: {enrichment['asn']} ({enrichment['ip']})")
+                    confidence_scores[provider] = confidence_scores.get(provider, 0) + 2
+        
+        # Check organization keywords
+        if enrichment['organization'] != 'Unknown':
+            org_lower = enrichment['organization'].lower()
+            for provider, patterns in INFRASTRUCTURE_PROVIDERS.items():
+                for keyword in patterns['keywords']:
+                    if keyword in org_lower:
+                        classifications.append(f"Organization matches {provider}: {keyword} in {enrichment['organization']}")
+                        confidence_scores[provider] = confidence_scores.get(provider, 0) + 1
+    
+    # Determine primary classification
+    if confidence_scores:
+        primary_provider = max(confidence_scores.items(), key=lambda x: x[1])
+        primary_classification = f"{primary_provider[0].title()} (confidence: {primary_provider[1]})"
+    else:
+        primary_classification = "Unknown/In-house infrastructure"
+    
+    return {
+        "primary": primary_classification,
+        "classifications": classifications,
+        "confidence_scores": confidence_scores
+    }
+
+def get_infrastructure_profile(msg, investigation):
+    """Analyze email infrastructure and routing"""
+    
+    # Extract Return-Path
+    return_path = msg.get('Return-Path', '').strip('<>')
+    
+    # Extract Message-ID domain
+    message_id = msg.get('Message-ID', '')
+    message_id_domain = ""
+    if '@' in message_id:
+        message_id_domain = message_id.split('@')[-1].strip('>')
+    
+    # Extract Received chain IPs
+    received_headers = msg.get_all('Received') or []
+    ips = extract_ips_from_received(received_headers)
+    
+    # Enrich IPs with ASN/org/country info
+    ip_enrichments = []
+    for ip in ips[:10]:  # Limit to first 10 IPs to avoid rate limiting
+        enrichment = enrich_ip_info(ip)
+        ip_enrichments.append(enrichment)
+    
+    # Classify infrastructure
+    classification = classify_infrastructure(return_path, message_id_domain, ip_enrichments)
+    
+    # Create JSON data structure
+    data = json.loads('{"Infrastructure":{"Data":{},"Investigation":{}}}')
+    
+    # Populate data section
+    data["Infrastructure"]["Data"]["return_path"] = return_path or "Not found"
+    data["Infrastructure"]["Data"]["message_id_domain"] = message_id_domain or "Not found"
+    data["Infrastructure"]["Data"]["received_ips_count"] = len(ips)
+    data["Infrastructure"]["Data"]["classification"] = classification["primary"]
+    data["Infrastructure"]["Data"]["routing_chain"] = len(received_headers)
+    
+    # Populate investigation section if requested
+    if investigation:
+        # Add IP enrichment data
+        for i, enrichment in enumerate(ip_enrichments, 1):
+            data["Infrastructure"]["Investigation"][f"ip_{i}"] = {
+                "IP_Address": enrichment["ip"],
+                "ASN": enrichment["asn"], 
+                "Organization": enrichment["organization"],
+                "Country": enrichment["country"],
+                "VirusTotal": f"https://www.virustotal.com/gui/ip-address/{enrichment['ip']}",
+                "AbuseIPDB": f"https://www.abuseipdb.com/check/{enrichment['ip']}"
+            }
+        
+        # Add classification details
+        data["Infrastructure"]["Investigation"]["classification_details"] = {
+            "Primary_Classification": classification["primary"],
+            "Evidence": classification["classifications"],
+            "Confidence_Breakdown": classification["confidence_scores"]
+        }
+        
+        # Add routing analysis
+        data["Infrastructure"]["Investigation"]["routing_analysis"] = {
+            "Return_Path": return_path or "Not found",
+            "Message_ID_Domain": message_id_domain or "Not found", 
+            "Received_Headers_Count": len(received_headers),
+            "Unique_IPs_Found": len(ips),
+            "IPs_Analyzed": ips[:10]  # Show first 10
+        }
+    
+    return data
+
 def get_attachments(filename : str, investigation):
     ''' Get Attachments from eml file'''
     with open(filename, "rb") as f:
@@ -585,6 +811,62 @@ def print_data(data):
                     else:
                         print(f"{k}:\n{v}\n")
                 print("_"*TER_COL_SIZE)
+    
+    # Print Infrastructure Profile
+    if data["Analysis"].get("Infrastructure"):
+        # Print Banner
+        get_infrastructure_banner()
+        
+        print(f"\nReturn Path: {data['Analysis']['Infrastructure']['Data']['return_path']}")
+        print(f"Message-ID Domain: {data['Analysis']['Infrastructure']['Data']['message_id_domain']}")
+        print(f"Received Chain IPs: {data['Analysis']['Infrastructure']['Data']['received_ips_count']}")
+        print(f"Routing Chain Length: {data['Analysis']['Infrastructure']['Data']['routing_chain']}")
+        print(f"\n🏢 Infrastructure Classification: {data['Analysis']['Infrastructure']['Data']['classification']}")
+        print("_"*TER_COL_SIZE)
+        
+        # Print Investigation
+        if data["Analysis"]["Infrastructure"].get("Investigation"):
+            get_investigation_banner() # Print Banner
+            
+            # Print IP enrichment data
+            print("📊 IP Address Analysis:")
+            print("_"*TER_COL_SIZE)
+            for key, val in data["Analysis"]["Infrastructure"]["Investigation"].items():
+                if key.startswith("ip_"):
+                    print(f"🌐 {val['IP_Address']}")
+                    print(f"   ASN: {val['ASN']}")
+                    print(f"   Organization: {val['Organization']}")
+                    print(f"   Country: {val['Country']}")
+                    print(f"   VirusTotal: {val['VirusTotal']}")
+                    print(f"   AbuseIPDB: {val['AbuseIPDB']}")
+                    print("_"*TER_COL_SIZE)
+            
+            # Print classification details
+            if "classification_details" in data["Analysis"]["Infrastructure"]["Investigation"]:
+                details = data["Analysis"]["Infrastructure"]["Investigation"]["classification_details"]
+                print("\n🔍 Classification Analysis:")
+                print("_"*TER_COL_SIZE)
+                print(f"Primary: {details['Primary_Classification']}")
+                print("\nEvidence:")
+                for evidence in details['Evidence']:
+                    print(f"  • {evidence}")
+                print("\nConfidence Scores:")
+                for provider, score in details['Confidence_Breakdown'].items():
+                    print(f"  • {provider.title()}: {score}")
+                print("_"*TER_COL_SIZE)
+            
+            # Print routing analysis
+            if "routing_analysis" in data["Analysis"]["Infrastructure"]["Investigation"]:
+                routing = data["Analysis"]["Infrastructure"]["Investigation"]["routing_analysis"]
+                print("\n📋 Routing Summary:")
+                print("_"*TER_COL_SIZE)
+                print(f"Return Path: {routing['Return_Path']}")
+                print(f"Message-ID Domain: {routing['Message_ID_Domain']}")
+                print(f"Received Headers: {routing['Received_Headers_Count']}")
+                print(f"Unique IPs: {routing['Unique_IPs_Found']}")
+                if routing['IPs_Analyzed']:
+                    print("IPs Analyzed:", ", ".join(routing['IPs_Analyzed']))
+                print("_"*TER_COL_SIZE)
 ##############################################################################
 
 # Write to File Function
@@ -654,6 +936,13 @@ if __name__ == '__main__':
         "-t",
         "--tracking",
         help="To detect tracking pixels in the Email",
+        required=False,
+        action="store_true"
+    )
+    parser.add_argument(
+        "-I",
+        "--infrastructure", 
+        help="To analyze email infrastructure and routing",
         required=False,
         action="store_true"
     )
@@ -744,6 +1033,12 @@ if __name__ == '__main__':
             tracking_pixels = get_tracking_pixels(msg, args.investigate)
             app_data["Analysis"].update(tracking_pixels)
         
+        # Infrastructure Profiling
+        if args.infrastructure:
+            # Get Infrastructure Profile
+            infrastructure = get_infrastructure_profile(msg, args.investigate)
+            app_data["Analysis"].update(infrastructure)
+        
         # If write to file requested
         if args.output:
             output_filename = str(args.output) # Filename
@@ -776,6 +1071,10 @@ if __name__ == '__main__':
         # Get Tracking Pixels
         tracking_pixels = get_tracking_pixels(msg, investigate)
         app_data["Analysis"].update(tracking_pixels)
+        
+        # Get Infrastructure Profile
+        infrastructure = get_infrastructure_profile(msg, investigate)
+        app_data["Analysis"].update(infrastructure)
 
         # If write to file requested
         if args.output:
