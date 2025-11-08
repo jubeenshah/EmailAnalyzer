@@ -12,6 +12,7 @@ import quopri
 import os
 import json
 from datetime import datetime
+from io import BytesIO
 from banners import (
     get_introduction_banner,get_headers_banner,get_links_banner,
     get_digests_banner,get_attachment_banner,get_investigation_banner
@@ -64,27 +65,42 @@ def get_headers(msg, investigation):
         # Reply To - From Investigation (Spoof Check)
         if data["Headers"]["Data"].get("reply-to") and data["Headers"]["Data"].get("from"):
             # Get Reply-To Address
-            replyto = re.findall(
-                    MAIL_REGEX,data["Headers"]["Data"]["reply-to"]
-            )[0]
+            replyto_matches = re.findall(
+                    MAIL_REGEX, data["Headers"]["Data"]["reply-to"]
+            )
             
             # Get From Address
-            mailfrom = re.findall(
-                    MAIL_REGEX,data["Headers"]["Data"]["from"]
-            )[0]
+            mailfrom_matches = re.findall(
+                    MAIL_REGEX, data["Headers"]["Data"]["from"]
+            )
             
-            # Check if From & Reply-To is same
-            if replyto == mailfrom:
-                conclusion = "Reply Address and From Address is SAME."
+            # Check if we found valid email addresses in both headers
+            if replyto_matches and mailfrom_matches:
+                replyto = replyto_matches[0]
+                mailfrom = mailfrom_matches[0]
+                
+                # Check if From & Reply-To is same
+                if replyto == mailfrom:
+                    conclusion = "Reply Address and From Address is SAME."
+                else:
+                    conclusion = "Reply Address and From Address is NOT Same. This mail may be SPOOFED."
+                
+                # Write data to JSON
+                data["Headers"]["Investigation"]["Spoof Check"] = {
+                    "Reply-To": replyto,
+                    "From": mailfrom,
+                    "Conclusion": conclusion
+                }
             else:
-                conclusion = "Reply Address and From Address is NOT Same. This mail may be SPOOFED."
-            
-            # Write data to JSON
-            data["Headers"]["Investigation"]["Spoof Check"] = {
-                "Reply-To" : replyto,
-                "From": mailfrom,
-                "Conclusion":conclusion
-            }
+                # Handle case where email regex didn't find valid addresses
+                replyto = replyto_matches[0] if replyto_matches else "No valid email found"
+                mailfrom = mailfrom_matches[0] if mailfrom_matches else "No valid email found"
+                
+                data["Headers"]["Investigation"]["Spoof Check"] = {
+                    "Reply-To": replyto,
+                    "From": mailfrom,
+                    "Conclusion": "Cannot determine spoof status - invalid or missing email addresses"
+                }
 
     return data
 
@@ -194,7 +210,10 @@ def get_links(msg, investigation):
 def get_attachments(filename : str, investigation):
     ''' Get Attachments from eml file'''
     with open(filename, "rb") as f:
-        msg = BytesParser(policy=policy.default).parse(f)
+        content = f.read()
+        # Strip leading whitespace that can interfere with email parsing
+        content = content.lstrip()
+        msg = BytesParser(policy=policy.default).parse(BytesIO(content))
     
     # Create JSON data
     data = json.loads('{"Attachments":{"Data":{},"Investigation":{}}}')
@@ -417,7 +436,10 @@ if __name__ == '__main__':
     
     # Parse the email file
     with open(filename, "rb") as file:
-        msg = BytesParser(policy=policy.default).parse(file)
+        content = file.read()
+        # Strip leading whitespace that can interfere with email parsing
+        content = content.lstrip()
+        msg = BytesParser(policy=policy.default).parse(BytesIO(content))
 
     # Create JSON data
     app_data = json.loads('{"Information": {}, "Analysis":{}}')
