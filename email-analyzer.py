@@ -8,7 +8,6 @@ from argparse import ArgumentParser
 import sys
 import hashlib
 import re
-import quopri
 import os
 import json
 from datetime import datetime
@@ -30,6 +29,7 @@ SUPPORTED_OUTPUT_TYPES = ["json","html"]
 
 # REGEX
 LINK_REGEX = r'href=\"((?:\S)*)\"'
+URL_REGEX = r'https?://[^\s<>"{}|\\^`\[\]]+'
 MAIL_REGEX = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,7}\b'
 
 # Date Format
@@ -180,8 +180,12 @@ def get_links(msg, investigation):
             except (UnicodeDecodeError, LookupError):
                 mail_content = content.decode('latin-1', errors='ignore')
 
-    # Find the Links    
-    links = re.findall(LINK_REGEX, mail_content)
+    # Find the Links using both href attributes and plain text URLs
+    href_links = re.findall(LINK_REGEX, mail_content)  # HTML href="..." links
+    url_links = re.findall(URL_REGEX, mail_content)    # Plain text URLs
+    
+    # Combine both types of links
+    links = href_links + url_links
 
     # Remove Duplicates
     links = list(dict.fromkeys(links))
