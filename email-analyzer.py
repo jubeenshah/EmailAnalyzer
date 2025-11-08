@@ -241,21 +241,50 @@ def get_attachments(filename : str, investigation):
 
     # Get Attachments from Mail
     attachments = []
+    unnamed_attachment_counter = 1
+    
     for attachment in msg.iter_attachments():
         attached_file = {}
-        attached_file["filename"] = attachment.get_filename()
+        
+        # Get filename with fallback for None
+        filename = attachment.get_filename()
+        if not filename:
+            # Check if it's an inline image/content (has Content-ID)
+            content_id = attachment.get('Content-ID')
+            if content_id:
+                # Remove angle brackets if present: <cid123> -> cid123
+                cid = content_id.strip('<>')
+                filename = f"inline_content_{cid}"
+            else:
+                # Generate synthetic name based on content type
+                content_type = attachment.get_content_type() or "application/octet-stream"
+                main_type, sub_type = content_type.split('/', 1)
+                filename = f"unnamed_attachment_{unnamed_attachment_counter}.{sub_type}"
+                unnamed_attachment_counter += 1
+        
+        attached_file["filename"] = filename
+        attached_file["content_type"] = attachment.get_content_type() or "unknown"
+        attached_file["content_id"] = attachment.get('Content-ID', '').strip('<>')
+        attached_file["is_inline"] = bool(attachment.get('Content-ID'))
         attached_file["MD5"] = hashlib.md5(attachment.get_payload(decode=True)).hexdigest()
         attached_file["SHA1"] = hashlib.sha1(attachment.get_payload(decode=True)).hexdigest()
         attached_file["SHA256"] = hashlib.sha256(attachment.get_payload(decode=True)).hexdigest()
         attachments.append(attached_file)
 
     for index,attachment in enumerate(attachments,start=1):
-        data["Attachments"]["Data"][str(index)] = attachment["filename"]
+        # Create a safe display name that includes type info
+        display_name = attachment["filename"]
+        if attachment["is_inline"]:
+            display_name = f"[INLINE] {display_name}"
+        data["Attachments"]["Data"][str(index)] = display_name
 
     # If investigation requested
     if investigation:
         for index,attachment in enumerate(attachments,start=1):
-            data["Attachments"]["Investigation"][attachment["filename"]] = {
+            # Use a safe key for investigation that includes index to avoid collisions
+            investigation_key = f"{index}_{attachment['filename']}"
+            
+            investigation_data = {
                 "Virustotal":{
                     "Name Search":f'https://www.virustotal.com/gui/search/{attachment["filename"]}',
                     "MD5":f'https://www.virustotal.com/gui/search/{attachment["MD5"]}',
@@ -263,6 +292,17 @@ def get_attachments(filename : str, investigation):
                     "SHA256":f'https://www.virustotal.com/gui/search/{attachment["SHA256"]}'
                 }
             }
+            
+            # Add additional metadata for context
+            investigation_data["Metadata"] = {
+                "Content-Type": attachment["content_type"],
+                "Is-Inline": attachment["is_inline"]
+            }
+            
+            if attachment["content_id"]:
+                investigation_data["Metadata"]["Content-ID"] = attachment["content_id"]
+            
+            data["Attachments"]["Investigation"][investigation_key] = investigation_data
 
     return data
 ##############################################################################
