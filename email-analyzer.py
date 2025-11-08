@@ -14,7 +14,8 @@ from datetime import datetime
 from io import BytesIO
 from banners import (
     get_introduction_banner,get_headers_banner,get_links_banner,
-    get_digests_banner,get_attachment_banner,get_investigation_banner
+    get_digests_banner,get_attachment_banner,get_investigation_banner,
+    get_tracking_banner
 )
 from html_generator import generate_table_from_json
 ##############################################################################
@@ -36,6 +37,41 @@ LINK_REGEX = r'''(?i)href\s*=\s*(?:
 )'''
 URL_REGEX = r'https?://[^\s<>"{}|\\^`\[\]]+'
 MAIL_REGEX = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,7}\b'
+
+# Tracking pixel detection regex
+IMG_REGEX = r'''(?i)<img\s+[^>]*src\s*=\s*(?:
+    "([^"]*)"           |  # Double quotes
+    '([^']*)'           |  # Single quotes  
+    ([^\s>]+)              # No quotes (until space or >)
+)[^>]*>'''
+
+# Tracking provider domain mapping
+TRACKING_PROVIDERS = {
+    'sfdcfc.net': 'Salesforce',
+    'sfdc.co': 'Salesforce',
+    'salesforce.com': 'Salesforce',
+    'hubspotemail.net': 'HubSpot', 
+    'hubspot.com': 'HubSpot',
+    'mkto-': 'Marketo',  # Prefix match
+    'marketo.com': 'Marketo',
+    'sendgrid.net': 'SendGrid',
+    'mailchimp.com': 'Mailchimp',
+    'mailchimp-mail.com': 'Mailchimp',
+    'constantcontact.com': 'Constant Contact',
+    'aweber.com': 'AWeber',
+    'mailgun.com': 'Mailgun',
+    'postmarkapp.com': 'Postmark',
+    'mandrill.com': 'Mandrill',
+    'amazonses.com': 'Amazon SES',
+    'outlook.com': 'Microsoft Outlook',
+    'gmail.com': 'Gmail'
+}
+
+# Suspicious tracking-related path patterns
+TRACKING_PATHS = [
+    'track', 'pixel', 'open', 't.png', 'beacon', 'analytics',
+    'impression', 'view', 'read', 'email-track', 'tracking'
+]
 
 # Date Format
 DATE_FORMAT = "%B %d, %Y - %H:%M:%S"
@@ -228,6 +264,127 @@ def get_links(msg, investigation):
             }
     return data
 
+def get_tracking_pixels(msg, investigation):
+    '''Detect tracking pixels in email message object'''
+    
+    # Extract HTML content from the message
+    html_content = ""
+    
+    # Get HTML content from all parts of the message
+    if msg.is_multipart():
+        for part in msg.walk():
+            if part.get_content_type() == "text/html":
+                content = part.get_payload(decode=True)
+                if content:
+                    try:
+                        charset = part.get_content_charset() or 'utf-8'
+                        html_content += content.decode(charset, errors='ignore') + "\n"
+                    except (UnicodeDecodeError, LookupError):
+                        html_content += content.decode('latin-1', errors='ignore') + "\n"
+    else:
+        # Single part HTML message
+        if msg.get_content_type() == "text/html":
+            content = msg.get_payload(decode=True)
+            if content:
+                try:
+                    charset = msg.get_content_charset() or 'utf-8'
+                    html_content = content.decode(charset, errors='ignore')
+                except (UnicodeDecodeError, LookupError):
+                    html_content = content.decode('latin-1', errors='ignore')
+    
+    # Find img tags
+    img_matches = re.findall(IMG_REGEX, html_content, re.VERBOSE)
+    img_urls = [match[0] or match[1] or match[2] for match in img_matches]
+    
+    tracking_pixels = []
+    
+    for img_url in img_urls:
+        if not img_url:
+            continue
+            
+        # Clean up the URL
+        img_url = img_url.strip()
+        
+        # Parse URL components
+        from urllib.parse import urlparse, parse_qs
+        parsed_url = urlparse(img_url)
+        domain = parsed_url.netloc.lower()
+        path = parsed_url.path.lower()
+        query_params = parse_qs(parsed_url.query)
+        
+        # Check for suspicious indicators
+        reasons = []
+        provider = "Unknown"
+        is_suspicious = False
+        
+        # Check for known tracking providers
+        for provider_domain, provider_name in TRACKING_PROVIDERS.items():
+            if provider_domain.endswith('-'):  # Prefix match (like mkto-)
+                if provider_domain[:-1] in domain:
+                    provider = provider_name
+                    reasons.append(f"known tracking domain: {provider_domain[:-1]}*")
+                    is_suspicious = True
+                    break
+            elif provider_domain in domain:
+                provider = provider_name
+                reasons.append(f"known tracking domain: {provider_domain}")
+                is_suspicious = True
+                break
+        
+        # Check for suspicious path patterns
+        for tracking_path in TRACKING_PATHS:
+            if tracking_path in path:
+                reasons.append(f"tracking path: {tracking_path}")
+                is_suspicious = True
+        
+        # Check for small image dimensions in URL or filename
+        if any(dim in img_url.lower() for dim in ['1x1', '2x2', '3x3', '1.png', '2.png', '3.png']):
+            reasons.append("suspicious dimensions")
+            is_suspicious = True
+        
+        # Check for common tracking file extensions and patterns
+        if path.endswith(('.png', '.gif', '.jpg', '.jpeg')) and len(path.split('/')[-1]) <= 10:
+            if any(track_name in path for track_name in ['t.', 'track', 'pixel', 'open']):
+                reasons.append("suspicious tracking file")
+                is_suspicious = True
+        
+        # Check for query parameters (common in tracking pixels)
+        if query_params and any(key in ['t', 'track', 'open', 'id', 'uid', 'email'] for key in query_params.keys()):
+            reasons.append("tracking query params")
+            is_suspicious = True
+        
+        # Only add to tracking pixels if suspicious
+        if is_suspicious:
+            tracking_pixels.append({
+                "url": img_url,
+                "provider": provider,
+                "reason": "; ".join(reasons)
+            })
+    
+    # Create JSON data
+    data = json.loads('{"TrackingPixels":{"Data":{},"Investigation":{}}}')
+    data["TrackingPixels"]["Data"]["count"] = len(tracking_pixels)
+    data["TrackingPixels"]["Data"]["items"] = tracking_pixels
+    
+    # If investigation requested, add analysis links
+    if investigation:
+        for index, pixel in enumerate(tracking_pixels, start=1):
+            url_for_analysis = pixel["url"]
+            # Remove protocol for analysis
+            if "://" in url_for_analysis:
+                url_for_analysis = url_for_analysis.split("://")[-1]
+            
+            data["TrackingPixels"]["Investigation"][f"pixel_{index}"] = {
+                "Virustotal": f"https://www.virustotal.com/gui/search/{url_for_analysis}",
+                "Urlscan": f"https://urlscan.io/search/#{url_for_analysis}",
+                "Analysis": {
+                    "Provider": pixel["provider"],
+                    "Suspicious_Indicators": pixel["reason"]
+                }
+            }
+    
+    return data
+
 def get_attachments(filename : str, investigation):
     ''' Get Attachments from eml file'''
     with open(filename, "rb") as f:
@@ -397,6 +554,37 @@ def print_data(data):
                     for a,b in v.items():
                         print(f"[{a}]->{b}")
                 print("_"*TER_COL_SIZE)
+    
+    # Print Tracking Pixels
+    if data["Analysis"].get("TrackingPixels"):
+        # Print Banner
+        get_tracking_banner()
+        
+        pixel_count = data["Analysis"]["TrackingPixels"]["Data"]["count"]
+        print(f"\nTracking Pixels Detected: {pixel_count}")
+        print("_"*TER_COL_SIZE)
+        
+        # Print each tracking pixel
+        for index, pixel in enumerate(data["Analysis"]["TrackingPixels"]["Data"]["items"], start=1):
+            print(f"[{index}] Provider: {pixel['provider']}")
+            print(f"    URL: {pixel['url']}")
+            print(f"    Reason: {pixel['reason']}")
+            print("_"*TER_COL_SIZE)
+        
+        # Print Investigation
+        if data["Analysis"]["TrackingPixels"].get("Investigation"):
+            get_investigation_banner() # Print Banner
+            for key,val in data["Analysis"]["TrackingPixels"]["Investigation"].items():
+                print("_"*TER_COL_SIZE)
+                print(f"- {key}\n")
+                for k,v in val.items():
+                    if isinstance(v, dict):
+                        print(f"{k}:")
+                        for a,b in v.items():
+                            print(f"[{a}]->{b}")
+                    else:
+                        print(f"{k}:\n{v}\n")
+                print("_"*TER_COL_SIZE)
 ##############################################################################
 
 # Write to File Function
@@ -463,6 +651,13 @@ if __name__ == '__main__':
         action="store_true"
     )
     parser.add_argument(
+        "-t",
+        "--tracking",
+        help="To detect tracking pixels in the Email",
+        required=False,
+        action="store_true"
+    )
+    parser.add_argument(
         "-i",
         "--investigate",
         help="Activate if you want an investigation",
@@ -515,7 +710,7 @@ if __name__ == '__main__':
     }
     
     # List of Arguments
-    arg_list = [args.headers, args.digests, args.links, args.attachments]
+    arg_list = [args.headers, args.digests, args.links, args.attachments, args.tracking]
 
     # Check if any argument given
     if any(arg_list):
@@ -542,6 +737,12 @@ if __name__ == '__main__':
             # Get Attachments 
             attachments = get_attachments(filename, args.investigate)
             app_data["Analysis"].update(attachments)
+        
+        # Tracking Pixels
+        if args.tracking:
+            # Get Tracking Pixels
+            tracking_pixels = get_tracking_pixels(msg, args.investigate)
+            app_data["Analysis"].update(tracking_pixels)
         
         # If write to file requested
         if args.output:
@@ -571,6 +772,10 @@ if __name__ == '__main__':
         # Get Attachments 
         attachments = get_attachments(filename, investigate)
         app_data["Analysis"].update(attachments)
+        
+        # Get Tracking Pixels
+        tracking_pixels = get_tracking_pixels(msg, investigate)
+        app_data["Analysis"].update(tracking_pixels)
 
         # If write to file requested
         if args.output:
