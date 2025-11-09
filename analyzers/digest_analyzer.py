@@ -57,8 +57,8 @@ class DigestAnalyzer(BaseAnalyzer):
                 file_content = f.read()
                 
             return {
-                "File MD5": hashlib.md5(file_content).hexdigest(),
-                "File SHA1": hashlib.sha1(file_content).hexdigest(),
+                "File MD5": hashlib.md5(file_content, usedforsecurity=False).hexdigest(),
+                "File SHA1": hashlib.sha1(file_content, usedforsecurity=False).hexdigest(),
                 "File SHA256": hashlib.sha256(file_content).hexdigest()
             }
         except (IOError, OSError) as e:
@@ -83,8 +83,8 @@ class DigestAnalyzer(BaseAnalyzer):
             content_bytes = content_str.encode("utf-8")
             
             return {
-                "Content MD5": hashlib.md5(content_bytes).hexdigest(),
-                "Content SHA1": hashlib.sha1(content_bytes).hexdigest(),
+                "Content MD5": hashlib.md5(content_bytes, usedforsecurity=False).hexdigest(),
+                "Content SHA1": hashlib.sha1(content_bytes, usedforsecurity=False).hexdigest(),
                 "Content SHA256": hashlib.sha256(content_bytes).hexdigest()
             }
         except Exception as e:

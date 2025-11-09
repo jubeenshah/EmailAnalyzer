@@ -151,9 +151,9 @@ class AttachmentAnalyzer(BaseAnalyzer):
             # Remove any remaining quotes
             filename = filename.strip('"\'')
             
-        except Exception:
-            # If decoding fails, return as-is
-            pass
+        except Exception as e:
+            # If decoding fails, return as-is - this is expected for some encodings
+            print(f"Warning: Failed to decode filename '{filename}': {e}")
         
         return filename
     
@@ -172,8 +172,9 @@ class AttachmentAnalyzer(BaseAnalyzer):
             if content:
                 size = len(content)
                 return self._format_size(size)
-        except Exception:
-            pass
+        except Exception as e:
+            # Unable to decode payload - this is expected for some attachment types
+            print(f"Warning: Failed to calculate attachment size: {e}")
         
         return 'unknown'
     
@@ -224,7 +225,8 @@ class AttachmentAnalyzer(BaseAnalyzer):
         try:
             if content:
                 return hashlib.sha256(content).hexdigest()
-        except Exception:
-            pass
+        except Exception as e:
+            # Unable to hash content - this is expected for empty or invalid content
+            print(f"Warning: Failed to calculate SHA256 hash: {e}")
         
         return None
