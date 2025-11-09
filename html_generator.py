@@ -127,7 +127,15 @@ def generate_attachment_section(attachments):
     for key,value in attachments["Data"].items():
         # Populate table rows
         html += "<tr>"
-        html += "<td>{}</td><td>{}</td>".format(key,value)
+        if isinstance(value, dict):
+            # Handle attachment data which is a nested dictionary
+            html += f"<td>{key}</td><td>"
+            for subkey, subvalue in value.items():
+                html += f"<b>{subkey}:</b> {subvalue}<br>"
+            html += "</td>"
+        else:
+            # Handle simple status message or other non-dict values  
+            html += "<td>{}</td><td>{}</td>".format(key,value)
         html += "</tr>"
         
     html += """
@@ -153,8 +161,12 @@ def generate_attachment_section(attachments):
         html += "<tr>"
         html += "<td>{}</td><td>".format(index)
         for k,v in values.items():
-            for x,y in v.items():
-                html += f"<b><a href='{y}' target='_blank'>{x} Scan({k})</a></b><br>"
+            if isinstance(v, dict):
+                for x,y in v.items():
+                    html += f"<b><a href='{y}' target='_blank'>{x} Scan({k})</a></b><br>"
+            else:
+                # v is a simple value like URL string or SHA256 hash
+                html += f"<b>{k}:</b> {v}<br>"
         html += "</td></tr>"
         
     html += """
@@ -240,7 +252,26 @@ def generate_tracking_section(tracking_pixels):
     for key,value in tracking_pixels["Data"].items():
         # Populate table rows
         html += "<tr>"
-        html += "<td>{}</td><td>{}</td>".format(key,value)
+        if key == "items" and isinstance(value, list):
+            # Handle tracking pixel items list safely
+            html += f"<td>{escape(str(key))}</td><td>"
+            for i, item in enumerate(value):
+                if isinstance(item, dict):
+                    html += f"<div class='tracking-pixel-item' style='margin-bottom: 10px; padding: 10px; border: 1px solid #ddd; border-radius: 5px;'>"
+                    html += f"<strong>Tracking Pixel #{i+1}</strong><br>"
+                    html += f"<strong>URL:</strong> <code>{escape(item.get('url', 'N/A'))}</code><br>"
+                    html += f"<strong>Provider:</strong> {escape(item.get('provider', 'N/A'))}<br>"
+                    html += f"<strong>Reason:</strong> {escape(item.get('reason', 'N/A'))}<br>"
+                    if 'tag' in item:
+                        # Display the HTML tag as escaped text, not as executable HTML
+                        html += f"<strong>HTML Tag:</strong> <code>{escape(item['tag'])}</code><br>"
+                    html += "</div>"
+                else:
+                    html += f"<div>{escape(str(item))}</div>"
+            html += "</td>"
+        else:
+            # Handle other data safely
+            html += f"<td>{escape(str(key))}</td><td>{escape(str(value))}</td>"
         html += "</tr>"
         
     html += """
@@ -567,6 +598,69 @@ def generate_table_from_json(json_obj):
             <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/4.6.0/css/bootstrap.min.css">
             <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
             <script async defer src="https://buttons.github.io/buttons.js"></script>
+            <style>
+                /* CSS for better text wrapping and URL handling */
+                .table td, .table th {{
+                    word-break: break-word;
+                    word-wrap: break-word;
+                    overflow-wrap: break-word;
+                    max-width: 300px;
+                    vertical-align: top;
+                }}
+                
+                .table {{
+                    table-layout: fixed;
+                    width: 100%;
+                }}
+                
+                .table th:first-child,
+                .table td:first-child {{
+                    width: 20%;
+                    min-width: 120px;
+                }}
+                
+                .table th:last-child,
+                .table td:last-child {{
+                    width: 80%;
+                }}
+                
+                code {{
+                    word-break: break-all;
+                    white-space: pre-wrap;
+                    overflow-wrap: anywhere;
+                    max-width: 100%;
+                    display: inline-block;
+                }}
+                
+                .tracking-pixel-item {{
+                    word-break: break-word;
+                    overflow-wrap: break-word;
+                }}
+                
+                .tracking-pixel-item code {{
+                    max-width: 100%;
+                    overflow-wrap: anywhere;
+                    white-space: pre-wrap;
+                }}
+                
+                /* Responsive table improvements */
+                @media (max-width: 768px) {{
+                    .table td, .table th {{
+                        font-size: 0.875rem;
+                        padding: 0.5rem;
+                    }}
+                    
+                    .table th:first-child,
+                    .table td:first-child {{
+                        width: 25%;
+                    }}
+                    
+                    .table th:last-child,
+                    .table td:last-child {{
+                        width: 75%;
+                    }}
+                }}
+            </style>
         </head>
 
         <nav class="navbar navbar-expand-lg navbar-light bg-light">
@@ -645,13 +739,16 @@ def generate_table_from_json(json_obj):
 
             <div class="d-flex">
                 <!-- Star -->
-                <a class="github-button" href="https://github.com/keraattin/EmailAnalyzer" data-icon="octicon-star" data-size="large" data-show-count="true" aria-label="Star keraattin/EmailAnalyzer on GitHub">Star</a>
+                <a class="github-button" href="https://github.com/jubeenshah/EmailAnalyzer" data-icon="octicon-star" data-size="large" data-show-count="true" aria-label="Star jubeenshah/EmailAnalyzer on GitHub">Star</a>
                 &nbsp;
                 <!-- Fork -->
-                <a class="github-button" href="https://github.com/keraattin/EmailAnalyzer/fork" data-icon="octicon-repo-forked" data-size="large" data-show-count="true" aria-label="Fork keraattin/EmailAnalyzer on GitHub">Fork</a>
+                <a class="github-button" href="https://github.com/jubeenshah/EmailAnalyzer/fork" data-icon="octicon-repo-forked" data-size="large" data-show-count="true" aria-label="Fork jubeenshah/EmailAnalyzer on GitHub">Fork</a>
                 &nbsp;
                 <!-- Follow -->
-                <a class="github-button" href="https://github.com/keraattin" data-size="large" data-show-count="true" aria-label="Follow @keraattin on GitHub">Follow @keraattin</a>
+                <a class="github-button" href="https://github.com/jubeenshah" data-size="large" data-show-count="true" aria-label="Follow @jubeenshah on GitHub">Follow @jubeenshah</a>
+                &nbsp;
+                <!-- Original -->
+                <a class="github-button" href="https://github.com/keraattin/EmailAnalyzer" data-icon="octicon-repo" data-size="large" aria-label="Original keraattin/EmailAnalyzer on GitHub">Original</a>
             </div>
         </nav>
 
@@ -727,4 +824,359 @@ def generate_table_from_json(json_obj):
         <script src="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/4.6.0/js/bootstrap.min.js"></script>
     """
 
+    return html
+
+
+def generate_batch_html_report(batch_results):
+    """
+    Generate a comprehensive HTML report for multiple email analyses.
+    
+    Args:
+        batch_results: Dictionary containing batch analysis results
+        
+    Returns:
+        HTML string for the comprehensive report
+    """
+    
+    total_files = batch_results.get("TotalFiles", 0)
+    files_data = batch_results.get("Files", {})
+    
+    # Validate files_data
+    if not isinstance(files_data, dict):
+        return f"<html><body><h1>Error: Invalid batch results format</h1><p>Expected dict, got {type(files_data)}</p><p>Data: {files_data}</p></body></html>"
+    
+    # Generate navigation menu
+    nav_items = []
+    file_sections = []
+    
+    print(f"Debug - About to iterate over files_data.items()")
+    for i, (filename, results) in enumerate(files_data.items(), 1):
+        print(f"Debug - Processing file {i}: {filename}")
+        safe_name = filename.replace('/', '_').replace(' ', '_').replace('.', '_')
+        nav_items.append({
+            'filename': filename,
+            'safe_name': safe_name,
+            'index': i
+        })
+    
+    print(f"Debug - nav_items created: {len(nav_items)} items")
+    
+    html = f"""
+        <head>
+            <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/4.6.0/css/bootstrap.min.css">
+            <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+            <script async defer src="https://buttons.github.io/buttons.js"></script>
+            <style>
+                .email-section {{
+                    margin-bottom: 3rem;
+                    border: 2px solid #dee2e6;
+                    border-radius: 0.5rem;
+                    padding: 1.5rem;
+                }}
+                .email-header {{
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color: white;
+                    padding: 1rem;
+                    margin: -1.5rem -1.5rem 1.5rem -1.5rem;
+                    border-radius: 0.5rem 0.5rem 0 0;
+                }}
+                .sticky-nav {{
+                    position: sticky;
+                    top: 0;
+                    z-index: 1000;
+                }}
+                .analysis-summary {{
+                    background: #f8f9fa;
+                    padding: 1rem;
+                    border-radius: 0.5rem;
+                    margin-bottom: 1rem;
+                }}
+                .quick-stats {{
+                    display: flex;
+                    justify-content: space-around;
+                    flex-wrap: wrap;
+                    gap: 1rem;
+                }}
+                .stat-card {{
+                    background: white;
+                    padding: 1rem;
+                    border-radius: 0.5rem;
+                    text-align: center;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                    min-width: 120px;
+                }}
+                
+                /* CSS for better text wrapping and URL handling */
+                .table td, .table th {{
+                    word-break: break-word;
+                    word-wrap: break-word;
+                    overflow-wrap: break-word;
+                    max-width: 300px;
+                    vertical-align: top;
+                }}
+                
+                .table {{
+                    table-layout: fixed;
+                    width: 100%;
+                }}
+                
+                .table th:first-child,
+                .table td:first-child {{
+                    width: 20%;
+                    min-width: 120px;
+                }}
+                
+                .table th:last-child,
+                .table td:last-child {{
+                    width: 80%;
+                }}
+                
+                code {{
+                    word-break: break-all;
+                    white-space: pre-wrap;
+                    overflow-wrap: anywhere;
+                    max-width: 100%;
+                    display: inline-block;
+                }}
+                
+                .tracking-pixel-item {{
+                    word-break: break-word;
+                    overflow-wrap: break-word;
+                }}
+                
+                .tracking-pixel-item code {{
+                    max-width: 100%;
+                    overflow-wrap: anywhere;
+                    white-space: pre-wrap;
+                }}
+                
+                /* Responsive table improvements */
+                @media (max-width: 768px) {{
+                    .table td, .table th {{
+                        font-size: 0.875rem;
+                        padding: 0.5rem;
+                    }}
+                    
+                    .table th:first-child,
+                    .table td:first-child {{
+                        width: 25%;
+                    }}
+                    
+                    .table th:last-child,
+                    .table td:last-child {{
+                        width: 75%;
+                    }}
+                }}
+            </style>
+        </head>
+
+        <nav class="navbar navbar-expand-lg navbar-dark bg-primary sticky-nav">
+            <a class="navbar-brand" href="#top"><i class="fa fa-envelope"></i> Email Analyzer - Batch Report</a>
+            <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav mr-auto">
+                    <li class="nav-item">
+                        <a class="nav-link" href="#summary">Summary</a>
+                    </li>
+                    <li class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle" href="#" data-toggle="dropdown">
+                            Email Files ({total_files})
+                        </a>
+                        <div class="dropdown-menu">
+    """
+    
+    # Add navigation items
+    for item in nav_items:
+        html += f'<a class="dropdown-item" href="#{item["safe_name"]}">{item["index"]}. {item["filename"]}</a>\n'
+    
+    html += """
+                        </div>
+                    </li>
+                </ul>
+                <div class="d-flex">
+                    <a class="github-button" href="https://github.com/jubeenshah/EmailAnalyzer" data-icon="octicon-star" data-size="large" aria-label="Star jubeenshah/EmailAnalyzer on GitHub">Star</a>
+                    &nbsp;
+                    <a class="github-button" href="https://github.com/jubeenshah/EmailAnalyzer/fork" data-icon="octicon-repo-forked" data-size="large" aria-label="Fork jubeenshah/EmailAnalyzer on GitHub">Fork</a>
+                </div>
+            </div>
+        </nav>
+
+        <div class="container-fluid">
+            <div id="top"></div>
+            
+            <!-- Summary Section -->
+            <section id="summary" class="mt-4">
+                <h1 class="text-center mb-4">
+                    <i class="fa-solid fa-chart-line"></i> Batch Email Analysis Report
+                </h1>
+                
+                <div class="analysis-summary">
+                    <h2><i class="fa-solid fa-info-circle"></i> Analysis Summary</h2>
+                    <div class="quick-stats">
+    """
+    
+    # Calculate summary statistics
+    total_links = 0
+    total_attachments = 0
+    total_tracking_pixels = 0
+    authentication_passes = 0
+    
+    for filename, results in files_data.items():
+        if results.get("Analysis"):
+            analysis = results["Analysis"]
+            
+            # Count links
+            if analysis.get("Links", {}).get("Data"):
+                links_data = analysis["Links"]["Data"]
+                if isinstance(links_data, dict):
+                    total_links += len([k for k in links_data.keys() if k.isdigit()])
+            
+            # Count attachments  
+            if analysis.get("Attachments", {}).get("Data"):
+                attachments_data = analysis["Attachments"]["Data"]
+                if isinstance(attachments_data, dict):
+                    total_attachments += len([k for k in attachments_data.keys() if "Attachment_" in k])
+            
+            # Count tracking pixels
+            if analysis.get("TrackingPixels", {}).get("Data", {}).get("count"):
+                total_tracking_pixels += analysis["TrackingPixels"]["Data"]["count"]
+            
+            # Count authentication passes
+            if analysis.get("Auth", {}).get("Data", {}).get("Conclusion"):
+                conclusion = analysis["Auth"]["Data"]["Conclusion"]
+                if "AUTHENTICATED" in conclusion or "LIKELY AUTHENTIC" in conclusion:
+                    authentication_passes += 1
+    
+    html += f"""
+                        <div class="stat-card">
+                            <h3>{total_files}</h3>
+                            <p>Emails Analyzed</p>
+                        </div>
+                        <div class="stat-card">
+                            <h3>{total_links}</h3>
+                            <p>Total Links</p>
+                        </div>
+                        <div class="stat-card">
+                            <h3>{total_attachments}</h3>
+                            <p>Attachments</p>
+                        </div>
+                        <div class="stat-card">
+                            <h3>{total_tracking_pixels}</h3>
+                            <p>Tracking Pixels</p>
+                        </div>
+                        <div class="stat-card">
+                            <h3>{authentication_passes}</h3>
+                            <p>Auth Passed</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+            
+            <hr class="my-5">
+    """
+    
+    # Generate individual email sections
+    for i, (filename, results) in enumerate(files_data.items(), 1):
+        safe_name = filename.replace('/', '_').replace(' ', '_').replace('.', '_')
+        
+        html += f"""
+            <section id="{safe_name}" class="email-section">
+                <div class="email-header">
+                    <h2><i class="fa-solid fa-envelope"></i> {i}. {escape(filename)}</h2>
+                    <p class="mb-0">
+                        <a href="#top" class="text-white"><i class="fa-solid fa-arrow-up"></i> Back to Top</a>
+                        {f"| <a href='#{nav_items[i]['safe_name']}' class='text-white'><i class='fa-solid fa-arrow-down'></i> Next Email</a>" if i < len(nav_items) else ""}
+                    </p>
+                </div>
+        """
+        
+        # Check if this is an error result
+        if results.get("EmailAnalyzer") == "Error":
+            html += f"""
+                <div class="alert alert-danger">
+                    <h4><i class="fa-solid fa-exclamation-triangle"></i> Analysis Error</h4>
+                    <p><strong>Error:</strong> {escape(str(results.get('Error', 'Unknown error')))}</p>
+                </div>
+            """
+        else:
+            # Generate the standard analysis report for this email
+            if results.get("Analysis"):
+                # Create a temporary single-email structure for the existing generator
+                single_email_result = {
+                    "EmailAnalyzer": "Analysis Results",
+                    "FileName": filename,
+                    "Analysis": results["Analysis"],
+                    "Information": {
+                        "Project": {
+                            "Name": "EmailAnalyzer",
+                            "Url": "https://github.com/jubeenshah/EmailAnalyzer",
+                            "Version": "2.0"
+                        },
+                        "Scan": {
+                            "Filename": filename,
+                            "Generated": results.get("Information", {}).get("Scan", {}).get("Generated", "Unknown")
+                        }
+                    }
+                }
+                
+                # Use existing generator functions for individual sections
+                analysis = results["Analysis"]
+                
+                if analysis.get("Headers"):
+                    html += generate_headers_section(analysis["Headers"])
+                
+                if analysis.get("Links"):
+                    html += generate_links_section(analysis["Links"])
+                
+                if analysis.get("Attachments"):
+                    html += generate_attachment_section(analysis["Attachments"])
+                
+                if analysis.get("Digests"):
+                    html += generate_digest_section(analysis["Digests"])
+                
+                if analysis.get("TrackingPixels"):
+                    html += generate_tracking_section(analysis["TrackingPixels"])
+                
+                if analysis.get("Infrastructure"):
+                    html += generate_infrastructure_section(analysis["Infrastructure"])
+                
+                if analysis.get("Auth"):
+                    html += generate_authentication_section(analysis["Auth"])
+            else:
+                html += """
+                    <div class="alert alert-warning">
+                        <h4><i class="fa-solid fa-exclamation-triangle"></i> No Analysis Data</h4>
+                        <p>No analysis data available for this email.</p>
+                    </div>
+                """
+        
+        html += "</section>\n"
+    
+    html += """
+        </div>
+        
+        <!-- Back to top button -->
+        <div class="fixed-bottom text-right p-3">
+            <a href="#top" class="btn btn-primary btn-lg rounded-circle">
+                <i class="fa-solid fa-arrow-up"></i>
+            </a>
+        </div>
+        
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/4.6.0/js/bootstrap.min.js"></script>
+        
+        <script>
+            // Smooth scrolling for anchor links
+            $('a[href*="#"]').on('click', function (e) {
+                e.preventDefault();
+                $('html, body').animate({
+                    scrollTop: $($(this).attr('href')).offset().top - 80
+                }, 500, 'linear');
+            });
+        </script>
+    """
+    
     return html
